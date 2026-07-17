@@ -60,20 +60,25 @@ def run_tracking():
     if key != RUN_SECRET:
         return jsonify({"error": "unauthorized"}), 401
 
-    if not _run_lock.acquire(blocking=False):
+    if _run_lock.locked():
         return jsonify({"status": "already running, skipped"}), 429
 
-    try:
-        ctx = _ContextStub()
-        # dry_run=False means it will actually update Zoho Books.
-        # Switch to True any time you want to test without writing changes.
-        org_tracking.main(ctx, dry_run=False)
-        return jsonify({"status": "completed"}), 200
-    except Exception as e:
-        logger.exception("Run failed")
-        return jsonify({"status": "error", "detail": str(e)}), 500
-    finally:
-        _run_lock.release()
+    def _background_job():
+        with _run_lock:
+            try:
+                ctx = _ContextStub()
+                # dry_run=False means it will actually update Zoho Books.
+                # Switch to True any time you want to test without writing changes.
+                org_tracking.main(ctx, dry_run=False)
+                logger.info("Run completed successfully")
+            except Exception:
+                logger.exception("Run failed")
+
+    threading.Thread(target=_background_job, daemon=True).start()
+
+    # Respond immediately so the caller (Deluge/invokeurl) never times out.
+    # Check the Render logs to see actual progress/completion.
+    return jsonify({"status": "started"}), 202
 
 
 if __name__ == "__main__":
